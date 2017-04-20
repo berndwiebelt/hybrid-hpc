@@ -1,0 +1,393 @@
+#!/usr/bin/env python                                                                                                                                                                                                                                      
+#############################################################
+# Program:  vmsub
+# Author:   Wil Wellington
+# Company:  Adaptive Computing
+#           Copyright (C) 2008-2017 by
+#           Adaptive Computing Enterpris es,
+#           Inc. All Rights Reserved.
+#
+# Description:
+#
+# Moab msub wrapper to create a vm requirements and send
+# informantion to startvm process for creating and monitoring of 
+# vm
+#
+# History
+#
+# BY           When             Notes
+# -----         --------         ---------------
+# wwellington  19.Apr.2017      Created
+#
+#############################################################
+
+import os
+import pwd
+import sys
+import time
+import datetime
+import uuid
+import glob
+from optparse import OptionParser,SUPPRESS_HELP
+import select
+import pty
+import subprocess
+import json
+import re
+
+
+# -----------------------
+#
+# run os command and return stderr and stdout
+#
+# -----------------------
+
+def runCmd( cmd ):
+
+    p = subprocess.Popen(cmd, env=dict(os.environ), shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # get stderr and stdout, and wait for the process to complete
+    # which should return list of applications and their status
+
+    (out,err) = p.communicate()
+    while p.returncode is None:
+        time.sleep(2)
+
+    # convert to dictionary and return
+
+    #result = { "out": out.decode(), "err": err.decode(), "exitcode": p.returncode }
+    result = { "out": re.sub(u"(\u2018|\u2019)", "'",out.decode()), "err": re.sub(u"(\u2018|\u2019)", "'",err.decode()), "exitcode": p.returncode }
+
+    return( result )
+
+# -----------------------
+#
+# Load a JSON file
+#
+# -----------------------
+
+def loadJSON( cfgFile ):
+
+    # open and read the configuration file
+
+    jsonData=open("%s" % (cfgFile))
+    try:
+        cFile = json.load(jsonData)
+    except Exception as e:
+        print("\n\tParse error in %s\n\t%s\n" % (cfgFile,e))
+        sys.exit(-1)
+
+    jsonData.close()
+
+    return( cFile )
+
+# ---------------------------------------
+#
+# Upate a progargs value
+#
+# ---------------------------------------
+
+def updateSysArgs(key,value):
+
+    if len(progargs) > 1:
+        firstItem = progargs[1]
+        if key is "<nokey>":
+	    progargs[1] = "%s %s" % (value,firstItem)
+        else:
+	    progargs[1] = "%s %s %s" % (key,value,firstItem)
+
+    return True
+
+# ---------------------------------------
+#
+# strip all args which 
+# msub/qsub doesn't understand
+#
+# ---------------------------------------
+
+def stripSysArgs():
+
+    doubleCheck = True
+    while doubleCheck:
+        doubleCheck = False
+        for _key in range(len(progargs)):
+            if progargs[_key].startswith("--"):
+                doubleCheck = True
+                progargs[_key] = ""
+                if "=" in progargs[_key]:
+                    progargs.pop(_key)
+                else:
+                    progargs.pop(_key)
+                    progargs.pop(_key)
+                break
+
+    return True
+
+
+# ---------------------------------------
+#
+# parse the jobn script and extract any vm directives
+#
+# ---------------------------------------
+
+def parseJobScript():
+
+    policycmd = False
+    foundvmrequest = False
+    policystartswith = "#PBS|#MSUB|#MOAB"
+
+    if len(progargs) == 1 or not os.path.isfile(progargs[-1]):
+        return foundvmrequest
+
+    with open(progargs[-1]) as jscript:
+        for line in jscript:
+
+            # if we encounter a blank line after reading resource requirements
+
+            if not line.strip() and policycmd:
+                return
+
+            # if we've surpassed reading the resource requirements
+
+            elif policycmd and line.split(" ")[0] not in policystartswith:
+                return
+
+            # otherwise update the options.* variables, only if not supplied on command line
+
+            elif line.split(" ")[0].upper() in policystartswith:
+		foundvmrequest = True
+                policycmd = True
+                lineargs = line[line.index(" ")+1:]
+                linepolicy = lineargs.split("=")
+                if linepolicy[0].upper().startswith("VM") and eval("options.%s" % (linepolicy[0])):
+                    exec("options.%s = '%s'" % (linepolicy[0].lower(),linepolocy[1]))
+
+                # otherwise normal flag, so lets simply update the sys args
+
+                else:
+                    # now build and extend the command lin args
+                    updateSysArgs("<nokey>",lineargs)
+
+    return foundvmrequest
+
+    
+def callmsub(vmrequest):
+
+    # process any stdin or piped commands
+
+    stdin =  select.select([sys.stdin,],[],[],0.0)[0]
+    if stdin:
+        stdin="".join(sys.stdin.readlines())
+    else:
+        stdin = ""
+
+    # write back the results
+
+    if stdin:
+        stdin = "echo '%s' | " % ( stdin.replace("\n",""))
+
+    progargs[0] = msubcmd
+
+    # if vm requested and last arguments is jobscript, replace with
+    # with the vmmonitor script, if the last argument is not already attributed 
+    # to vmscript
+
+    if vmrequest:
+	if os.path.isfile(progargs[-1]) and progargs[-2] is not "--vmscript":
+	   progargs[-1] = options.vmmonitor
+
+    # actually run the command
+
+    cmd="%s%s" % (stdin," ".join(progargs))
+    print "calling msub with ---- %s" % (cmd)
+
+    result=runCmd(cmd)
+
+    print "%s%s" % (result["out"],result["err"])
+
+
+
+# ---------------------------------------
+#
+# sys MAIN
+#
+# ---------------------------------------
+
+if __name__ == '__main__':
+
+    # check to make sure this is being ran as root
+
+    if os.geteuid() == 0:
+        print("\n\tERROR: %s CAN NOT be ran as root\n" % (progargs[0]))
+        sys.exit(0)
+
+    # define location of the real msub command
+    msubcmd="msub"
+
+    progargs = sys.argv
+
+    progargs[0] = msubcmd
+    argslist = " ".join(progargs)
+
+    # since optparse doesn't deal very well with command line args that provide no values
+
+    if " -I" in argslist or " -V" in argslist or " -n" in argslist or " -z" in argslist:
+       if " -xI" in argslist:
+           print "/bin/bash -c %s" % (argslist)
+	   pty.spawn("/bin/bash")
+       else:
+           callmsub( False )
+
+       sys.exit(0)
+
+	
+    # check to see if we are being called with arguments
+
+    usage = "usage: %prog options"
+
+    parser = OptionParser(usage=usage)
+
+    parser.add_option("--vmconfig", dest="vmconfig", help="user openstack config file", default="")
+    parser.add_option("--vmimage", dest="vmimage", help="openstack image id to be used for the vm", default="")
+    parser.add_option("--vmmem", dest="vmmem", help="memory required for the vm", default="1GB")
+    parser.add_option("--vmproject", dest="vmproject", help="user assigned openstack proj id", default="")
+    parser.add_option("--vmsshkeyname", dest="vmsshkeyname", help="url where the openstack can be reached", default="")
+    parser.add_option("--vmscript", dest="vmscript", help="script/application to launch when vm is active (mandatory)", default="")
+    parser.add_option("--vmmonitor", dest="vmmonitor", help="vm monitoring application", default="/opt/bwhpc/common/tools/monitorVM/monitorVM.py")
+
+    parser.add_option("-a",dest="qsub_a", default="", help=" Time after which the job is eligible for execution [[[[CC]YY]MM]DD]hhmm[.SS]")
+    parser.add_option("-A",dest="qsub_A", default="", help="Account/projecti associated with job")
+    parser.add_option("-b",dest="qsub_b", default="", help="Seconds qsub will block attempting to contact pbs_server")
+    parser.add_option("-c",dest="qsub_c", default="", help="checkpoint options [none|enabled|shutdown|periodic|interval|depth|dir]")
+    parser.add_option("-C",dest="qsub_C", default="", help="Prefix to declare directive to the qsub command")
+    parser.add_option("-d",dest="qsub_d", default="", help="Working directory")
+    parser.add_option("-D",dest="qsub_D", default="", help="Define root dir for the job")
+    parser.add_option("-e",dest="qsub_e", default="", help="Error stream for the batch job [hostname:]path_name")
+    parser.add_option("-f",dest="qsub_f", default="", help="Make job fault tolerant")
+    parser.add_option("-F",dest="qsub_F", default="", help="Launch arguments to pass to job script")
+    parser.add_option("-I",dest="qsub_I", default="", help="Run job as interactive")
+    parser.add_option("-j",dest="qsub_j", default="", help="Merge stderr and stdout of the job")
+    parser.add_option("-k",dest="qsub_k", default="", help="stdout or stderr should be retained on execution host")
+    parser.add_option("-l",dest="qsub_l", default="", help="Resource extension/requirements for the job")
+    parser.add_option("-L",dest="qsub_L", default="", help="NUMA-aware resource requests")
+    parser.add_option("-m",dest="qsub_m", default="", help="Conditions execution servre should send email")
+    parser.add_option("-M",dest="qsub_M", default="", help="Users to receive email")
+    parser.add_option("-n",dest="qsub_n", default="", help="Specify job node exclusivity")
+    parser.add_option("-N",dest="qsub_N", default="", help="Name for the job")
+    parser.add_option("-o",dest="qsub_o", default="", help="Define stdout for the job")
+    parser.add_option("-p",dest="qsub_p", default="", help="Job priority")
+    parser.add_option("-P",dest="qsub_P", default="", help="Allow root/manager to submit as proxy")
+    parser.add_option("-q",dest="qsub_q", default="", help="Queue/Class destination or the job")
+    parser.add_option("-r",dest="qsub_r", default="", help="Job is re-runable")
+    parser.add_option("-S",dest="qsub_S", default="", help="Desire shell for the job")
+    parser.add_option("-t",dest="qsub_t", default="", help="Job array")
+    parser.add_option("-u",dest="qsub_u", default="", help="User where the job should run under")
+    parser.add_option("-v",dest="qsub_v", default="", help="Environment variables to export to job")
+    parser.add_option("-V",dest="qsub_V", default="", help="Job access qsub environment variables")
+    parser.add_option("-w",dest="qsub_w", default="", help="Working directory")
+    parser.add_option("-W",dest="qsub_W", default="", help="Additional job attributes")
+    parser.add_option("-x",dest="qsub_x", default="", help="Submit interactive job with a script")
+    parser.add_option("-X",dest="qsub_X", default="", help="X11 forwarding")
+    parser.add_option("-z",dest="qsub_z", default="", help="not to write job identifier assigned to the job command")
+
+    # automatically add the default options to the help text
+
+    for option in parser.option_list:
+        if option.default != ("NO", "DEFAULT") and option.help != "":
+            option.help += (" " if option.help else "") + "[default: %default]"
+
+    (options, args) = parser.parse_args()
+
+    # parse the job script for vm specific flags
+    vmrequest = parseJobScript()
+
+    # load user configs if the vmconfig is sey
+
+    if options.vmconfig:
+        vmrequest=True
+
+    # declare some vars
+
+    vmargs=["vmimage","vmproject","vmsshkeyname","vmscript","vmmem"]
+    vmconf = ""
+    userconf = "%s/vm.conf" % (os.environ['HOME'])
+    vmvariables = ""
+
+    # check to see if the keytab file exist
+
+    if vmrequest:
+
+        # if we have requested a config file
+        if os.path.isfile(options.vmconfig):
+ 
+            fstat = os.stat(userconf)
+
+            if fstat.st_mode != 33024:
+                print "\nSECURITY WARNING: .vm.conf detected but incorrect permissions. Should be 0400..ABORTING\n"
+                sys.exit(-1)
+
+	    # load the vm.conf file and apply the settings 
+
+	    vmconf = loadJSON(userconf)
+
+            # command line arguments should always override the config file and jobscript arguments
+
+            for vmarg in vmargs:
+		if not eval("options.%s" % (vmarg)) and vmarg in vmconf:
+               	   exec("options.%s = vmconf['%s']" % (vmarg,vmarg))
+
+        else:
+            print "ERROR: unable to locate the vmconfig file [%s]\n" % (options.vmconfig)
+            sys.exit(-1)
+  
+        # update sys args with some additional variables
+
+        vmuuid = "%s" % (str(uuid.uuid4()).replace("-",""))
+        vmvariables = "%s:%s" % (vmarg,vmuuid)
+
+        # set default mem
+
+        if not options.vmmem:
+            options.vmmem="1GB"
+
+        # check to see if we have defined the vmscript
+ 
+        if options.vmscript:
+            vmvariables = "%s+vmscript:%s" % (vmvariables,os.path.abspath(options.vmscript))
+        elif not os.path.isfile(os.path.abspath(progargs[-1])):
+            options.vmscript=os.path.abspath(progargs[-1])
+            vmvariables = "%s+vmscript:%s" % (vmvariables,options.vmscript)
+
+        # check to see if we have requested a vm but not passed all the required args
+
+        for vmarg in vmargs:
+            if not eval("options.%s" % (vmarg)):
+                print "\nERROR: VM requested but not all required vmflags specified. Missing %s\n" % (vmarg)
+                sys.exit(-1)
+            elif vmarg in "vmconfig|vmscript":
+		continue
+            else:
+                exec("uValue = options.%s" % (vmarg))
+                vmvariables = "%s+%s:%s" % (vmvariables,vmarg,uValue)
+
+        if not os.path.isfile(os.path.abspath(progargs[-1])):
+            progargs[-1] = options.vmmonitor
+        else:
+            progargs.append(options.vmmonitor)
+
+        updateSysArgs("-l","var=%s" % (vmvariables))
+
+    #// end of vmrequest
+
+    # remove all of the non qsub/msub args
+
+    stripSysArgs()
+
+    callmsub(vmrequest)
+
+    # // finally exit
+
+    sys.exit(0)
+
+
+
