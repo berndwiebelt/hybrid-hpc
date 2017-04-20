@@ -280,7 +280,7 @@ def main(var):
 
     if vm_ip != "":
         logger.info("Update Job Metadata in Moab:")
-        command = ["mjobctl", "-m var+=VM_IP=" + vm_ip + ",VM-ID=" + vm.id, var['pbs-jobid']]
+        command = ["/opt/moab/bin/mjobctl", "-m var+=VM_IP=" + vm_ip + ",VM-ID=" + vm.id, var['pbs-jobid']]
         logger.debug("mjobctl command: %s", command)
         try:
             call(command)
@@ -335,7 +335,7 @@ def main(var):
             exit(1)
 
         logger.info("Adding the libvirt instance name to Moab-Job information")
-        command = ["mjobctl", "-m var+=libvirtName=" + instance_name, var['pbs-jobid']]
+        command = ["/opt/moab/bin/mjobctl", "-m var+=libvirtName=" + instance_name, var['pbs-jobid']]
         logger.debug("mjobctl command: %s", command)
         try:
             call(command)
@@ -449,7 +449,7 @@ if __name__ == '__main__':
     logger = logging.getLogger()
     logger.setLevel(getattr(logging,debug_level))
     
-    logger.info("-- Monitor VM Script --")
+    logger.info("-- start VM Script --")
 
     # register signal handler to intercept SIGHUP
     # this is needed to terminate the VM if the job wall-time is over
