@@ -3,9 +3,6 @@
 # Program:  vmsub
 # Author:   Wil Wellington
 # Company:  Adaptive Computing
-#           Copyright (C) 2008-2017 by
-#           Adaptive Computing Enterpris es,
-#           Inc. All Rights Reserved.
 #
 # Description:
 #
@@ -155,7 +152,7 @@ def parseJobScript():
             # otherwise update the options.* variables, only if not supplied on command line
 
             elif line.split(" ")[0].upper() in policystartswith:
-		foundvmrequest = True
+                foundvmrequest = True
                 policycmd = True
                 lineargs = line[line.index(" ")+1:]
                 linepolicy = lineargs.split("=")
@@ -170,6 +167,11 @@ def parseJobScript():
 
     return foundvmrequest
 
+# ---------------------------------------
+#
+# Call msub and pass relevant request request
+#
+# ---------------------------------------
     
 def callmsub(vmrequest):
 
@@ -181,7 +183,7 @@ def callmsub(vmrequest):
     else:
         stdin = ""
 
-    # write back the results
+    # build the response back to msub
 
     if stdin:
         stdin = "echo '%s' | " % ( stdin.replace("\n",""))
